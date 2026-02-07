@@ -1,0 +1,28 @@
+{
+  "name": "@citizenofthecloud/sdk",
+  "version": "0.1.0",
+  "description": "Identity and authentication SDK for autonomous AI agents",
+  "main": "src/index.js",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.js",
+    "./express": "./src/express.js"
+  },
+  "files": [
+    "src/"
+  ],
+  "keywords": [
+    "ai",
+    "agents",
+    "identity",
+    "authentication",
+    "autonomous",
+    "cloud-identity"
+  ],
+  "author": "citizenofthecloud.com",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/citizenofthecloud/sdk"
+  }
+}
