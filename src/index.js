@@ -259,6 +259,76 @@ export async function getGovernanceFeed(registryUrl) {
   return data.feed ?? (Array.isArray(data) ? data : []);
 }
 
+// ─── Registration (SDK token auth) ───────────────────────────
+
+/**
+ * Register a new agent in a single call. Generates a fresh Ed25519 keypair
+ * locally, posts the public key plus metadata to the registry, and returns
+ * the cloud_id with both keys. The private key is never sent to the server.
+ *
+ * @param {Object} opts
+ * @param {string} opts.sdkToken - cotc_sdk_* token from /account on citizenofthecloud.com
+ * @param {string} opts.name
+ * @param {string} opts.declaredPurpose
+ * @param {string} [opts.autonomyLevel='tool'] - 'tool' | 'assistant' | 'agent' | 'self-directing'
+ * @param {string[]} [opts.capabilities=[]]
+ * @param {string} [opts.operationalDomain]
+ * @param {boolean} [opts.covenantSigned=true]
+ * @param {string} [opts.registryUrl]
+ * @returns {Promise<{cloudId: string, publicKey: string, privateKey: string, name: string, declaredPurpose: string, autonomyLevel: string, passport: object}>}
+ */
+export async function registerAgent({
+  sdkToken,
+  name,
+  declaredPurpose,
+  autonomyLevel = 'tool',
+  capabilities = [],
+  operationalDomain,
+  covenantSigned = true,
+  registryUrl = DEFAULT_REGISTRY,
+}) {
+  if (!sdkToken || !sdkToken.startsWith('cotc_sdk_')) {
+    throw new CloudSDKError(
+      'sdkToken must be a cotc_sdk_* token. Create one at citizenofthecloud.com/account.',
+    );
+  }
+  const { publicKey, privateKey } = generateKeyPair();
+  const res = await fetch(`${registryUrl.replace(/\/$/, '')}/api/register`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${sdkToken}`,
+    },
+    body: JSON.stringify({
+      name,
+      declared_purpose: declaredPurpose,
+      autonomy_level: autonomyLevel,
+      public_key: publicKey,
+      covenant_signed: covenantSigned,
+      capabilities,
+      operational_domain: operationalDomain,
+    }),
+  });
+  if (!res.ok) {
+    let msg = `Registry returned ${res.status}`;
+    try {
+      const j = await res.json();
+      msg = j.error || j.error_code || msg;
+    } catch {}
+    throw new RegistryError(`Registration failed: ${msg}`);
+  }
+  const data = await res.json();
+  return {
+    cloudId: data.cloud_id,
+    publicKey,
+    privateKey,
+    name,
+    declaredPurpose,
+    autonomyLevel,
+    passport: data.passport,
+  };
+}
+
 // ─── Trust Policy ────────────────────────────────────────────
 
 /**
