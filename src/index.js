@@ -117,6 +117,72 @@ export class CloudIdentity {
     const data = await res.json();
     return data.agent;
   }
+
+  /**
+   * Prove this agent's identity to the registry via the full challenge/respond
+   * cryptographic loop. The server issues a nonce, we sign it with the private
+   * key, the server validates the signature against our registered public key.
+   * This is the canonical identity-proof flow; the resulting verification_log
+   * row is server-witnessed (authenticated=true) and contributes to trust score.
+   *
+   * @returns {Promise<{verified: boolean, agent?: Object, error?: string, timestamp?: string}>}
+   */
+  async proveIdentity() {
+    const { nonce } = await requestChallenge(this.registryUrl, this.cloudId);
+    // Server signs over the UTF-8 bytes of the hex nonce string (not the
+    // decoded hex bytes) — see registry's lib/verification.js.
+    const signature = crypto.sign(null, Buffer.from(nonce, 'utf8'), this._privateKey);
+    return submitChallengeResponse(
+      this.registryUrl,
+      this.cloudId,
+      nonce,
+      signature.toString('base64'),
+    );
+  }
+}
+
+// ─── Challenge / Respond ─────────────────────────────────────
+
+/**
+ * Request a verification challenge for a cloud_id. Returns a nonce the agent
+ * must sign with its private key.
+ *
+ * @param {string} registryUrl - Registry base URL
+ * @param {string} cloudId - The agent's Cloud ID
+ * @returns {Promise<{nonce: string, expires_in: number}>}
+ */
+export async function requestChallenge(registryUrl, cloudId) {
+  const url = `${registryUrl.replace(/\/$/, '')}/api/verify/challenge`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ cloud_id: cloudId }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new RegistryError(err.error || `Challenge request failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+/**
+ * Submit a signed challenge response. The registry validates the signature
+ * against the agent's registered public key and returns the verified agent.
+ *
+ * @param {string} registryUrl - Registry base URL
+ * @param {string} cloudId - The agent's Cloud ID
+ * @param {string} nonce - The hex nonce returned by requestChallenge
+ * @param {string} signature - Base64 Ed25519 signature over the nonce bytes
+ * @returns {Promise<{verified: boolean, agent?: Object, error?: string, timestamp?: string}>}
+ */
+export async function submitChallengeResponse(registryUrl, cloudId, nonce, signature) {
+  const url = `${registryUrl.replace(/\/$/, '')}/api/verify/respond`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ cloud_id: cloudId, nonce, signature }),
+  });
+  return res.json();
 }
 
 // ─── Verification ────────────────────────────────────────────
@@ -144,6 +210,98 @@ function setCache(cloudId, data) {
  */
 export function clearCache() {
   _cache.clear();
+}
+
+// ─── Registry queries (no auth) ──────────────────────────────
+
+/**
+ * Look up an agent's public record by cloud_id.
+ *
+ * @param {string} registryUrl - Registry base URL
+ * @param {string} cloudId - The agent's Cloud ID
+ * @returns {Promise<Object|null>} Agent record or null if not found
+ */
+export async function lookupAgent(registryUrl, cloudId) {
+  const url = `${registryUrl.replace(/\/$/, '')}/api/verify?cloud_id=${encodeURIComponent(cloudId)}`;
+  const res = await fetch(url);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new RegistryError(`Registry returned ${res.status}`);
+  const data = await res.json();
+  if (!data.verified) return null;
+  return data.agent;
+}
+
+/**
+ * List public agent directory entries.
+ *
+ * @param {string} registryUrl - Registry base URL
+ * @returns {Promise<Array<Object>>} List of agent records
+ */
+export async function listDirectory(registryUrl) {
+  const url = `${registryUrl.replace(/\/$/, '')}/api/directory`;
+  const res = await fetch(url);
+  if (!res.ok) throw new RegistryError(`Registry returned ${res.status}`);
+  const data = await res.json();
+  return data.agents ?? (Array.isArray(data) ? data : []);
+}
+
+/**
+ * Get the governance activity feed.
+ *
+ * @param {string} registryUrl - Registry base URL
+ * @returns {Promise<Array<Object>>} List of governance events
+ */
+export async function getGovernanceFeed(registryUrl) {
+  const url = `${registryUrl.replace(/\/$/, '')}/api/governance/feed`;
+  const res = await fetch(url);
+  if (!res.ok) throw new RegistryError(`Registry returned ${res.status}`);
+  const data = await res.json();
+  return data.feed ?? (Array.isArray(data) ? data : []);
+}
+
+// ─── Trust Policy ────────────────────────────────────────────
+
+/**
+ * Reusable trust rules for verification. Pass to `verifyAgent` or
+ * `verifyRequest` via the `options` argument to apply the same policy
+ * across multiple verification calls.
+ *
+ * @example
+ * const policy = new TrustPolicy({
+ *   minimumTrustScore: 0.6,
+ *   requireCovenant: true,
+ *   allowedAutonomyLevels: ['agent', 'assistant'],
+ * });
+ * await verifyAgent(headers, policy);
+ */
+export class TrustPolicy {
+  /**
+   * @param {Object} [config]
+   * @param {number} [config.maxAge=300] - Max signature age in seconds
+   * @param {boolean} [config.requireCovenant=true] - Reject if covenant not signed
+   * @param {number} [config.minimumTrustScore] - Reject below this score
+   * @param {string[]} [config.allowedAutonomyLevels] - Restrict to these levels
+   * @param {string[]} [config.blockedAgents] - Reject these Cloud IDs
+   * @param {string} [config.registryUrl] - Registry URL
+   * @param {boolean} [config.cache=true] - Cache public keys
+   */
+  constructor({
+    maxAge = DEFAULT_MAX_AGE,
+    requireCovenant = true,
+    minimumTrustScore = null,
+    allowedAutonomyLevels = null,
+    blockedAgents = null,
+    registryUrl = DEFAULT_REGISTRY,
+    cache = true,
+  } = {}) {
+    this.maxAge = maxAge;
+    this.requireCovenant = requireCovenant;
+    this.minimumTrustScore = minimumTrustScore;
+    this.allowedAutonomyLevels = allowedAutonomyLevels;
+    this.blockedAgents = blockedAgents;
+    this.registryUrl = registryUrl;
+    this.cache = cache;
+  }
 }
 
 /**
