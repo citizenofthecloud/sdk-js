@@ -213,6 +213,32 @@ const all = await listDirectory('https://citizenofthecloud.com');
 const feed = await getGovernanceFeed('https://citizenofthecloud.com');
 ```
 
+#### Reading the reputation block (Layer 3)
+
+`lookupAgent()` now surfaces a `reputation` field alongside the composite `trust_score`.
+The composite stays at `agent.trust_score`; the component signals live at `agent.reputation`
+and let relying parties weight inputs against their own use case. Signals refresh every 5 minutes;
+a freshly registered agent may return `reputation: null` — treat null as "not enough data yet,"
+not as "zero across all signals."
+
+```js
+const agent = await lookupAgent('https://citizenofthecloud.com', 'cc-abc...');
+
+// Composite — fast threshold check
+if (agent.trust_score >= 0.5) { /* ... */ }
+
+// Components — recency-weighted reliability
+const rep = agent.reputation;
+if (rep && rep.lifetime_verifications >= 100 && rep.success_rate_30d >= 0.9) {
+  accept(agent);
+}
+
+// Hard-reject on any upheld report, regardless of composite
+if (rep && rep.reports_upheld >= 1) {
+  throw new Error('agent has upheld governance reports');
+}
+```
+
 ### Express route guard (#16 http-middleware)
 
 ```js
