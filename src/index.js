@@ -7,7 +7,11 @@
 
 import crypto from 'node:crypto';
 
-const DEFAULT_REGISTRY = 'https://citizenofthecloud.com';
+// Canonical host is www. The bare apex citizenofthecloud.com 307-redirects
+// here, and Node's fetch strips the Authorization header on cross-host
+// redirects — so callers using the bare apex silently fail registerAgent
+// (and any future auth-bearing endpoint) with a 401.
+const DEFAULT_REGISTRY = 'https://www.citizenofthecloud.com';
 const DEFAULT_MAX_AGE = 300; // 5 minutes
 
 // ─── Key Generation ──────────────────────────────────────────
